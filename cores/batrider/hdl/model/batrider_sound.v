@@ -53,7 +53,9 @@ module batrider_sound (
     output reg     [7:0] SOUNDLATCH3,
     output reg     [7:0] SOUNDLATCH4,
     input          [7:0] SOUNDLATCH,
-    input          [7:0] SOUNDLATCH2
+    input          [7:0] SOUNDLATCH2,
+    input          [1:0] FX_LEVEL,
+    input		 DIP_PAUSE
 );
 
 // assign ACK = 1'b1;
@@ -88,45 +90,51 @@ wire [17:0] oki0_pcm_addr, oki1_pcm_addr;
  initial fd = $fopen("logsound.txt", "w");
 `endif
 
-localparam [7:0] fmgain = 8'h06, pcmgain = 8'h0C;
+/*
+0: pcmgain <= 8'h10 ;   // 100%
+1: pcmgain <= 8'h20 ;   // 200%
+2: pcmgain <= 8'h0c ;   // 75%
+3: pcmgain <= 8'h08 ;   // 50%
+*/
+
+wire [7:0] fx_mult = FX_LEVEL == 2 ? 8'h10 :
+                     FX_LEVEL == 3 ? 8'h20 :
+                     FX_LEVEL == 1 ? 8'h0c :
+                     FX_LEVEL == 0 ? 8'h08 :
+                     8'h10; 
+localparam [7:0] fmgain = 8'h08, pcmgain = 8'h10;
 always @(posedge CLK96) begin
     peak <= peak_l | peak_r;
 end
 
+reg [7:0] gain1;
+reg signed [15:0] final_left;
+reg signed [13:0] final_oki0, final_oki1;
+always @(posedge CLK96) begin
+    final_left<=fm_left;
+    final_oki0<=oki0_pre;
+    final_oki1<=oki1_pre;
+    gain1<=fx_mult;
+end
+
+assign right = left;
+assign peak_r = peak_l;
 jtframe_mixer #(.W0(16), .W1(14), .W2(14), .WOUT(16)) u_mix_left(
     .rst    ( RESET96       ),
     .clk    ( CLK96       ),
     .cen    ( 1'b1      ),
     // input signals
-    .ch0    ( fm_left   ),
-    .ch1    ( oki0_pre ),
-    .ch2    ( oki1_pre ),
+    .ch0    ( final_left   ),
+    .ch1    ( final_oki0 ),
+    .ch2    ( final_oki1 ),
     .ch3    ( 16'd0     ),
     // gain for each channel in 4.4 fixed point format
     .gain0  ( fmgain    ),
-    .gain1  ( pcmgain   ),
-    .gain2  ( pcmgain     ),
+    .gain1  ( gain1 ),
+    .gain2  ( gain1     ),
     .gain3  ( 8'd0     ),
     .mixed  ( left      ),
     .peak   ( peak_l    )
-);
-
-jtframe_mixer #(.W0(16), .W1(14), .W2(14), .WOUT(16)) u_mix_right(
-    .rst    ( RESET96       ),
-    .clk    ( CLK96       ),
-    .cen    ( 1'b1      ),
-    // input signals
-    .ch0    ( fm_right  ),
-    .ch1    ( oki0_pre  ),
-    .ch2    ( oki1_pre   ),
-    .ch3    ( 16'd0   ),
-    // gain for each channel in 4.4 fixed point format
-    .gain0  ( fmgain    ),
-    .gain1  ( pcmgain   ),
-    .gain2  ( pcmgain    ),
-    .gain3  ( 8'd0    ),
-    .mixed  ( right     ),
-    .peak   ( peak_r    )
 );
 
 //io
@@ -343,7 +351,7 @@ assign PCM1_CS = 1'b1;
 jt6295 #(.INTERPOL(1)) u_adpcm_0(
     .rst        ( RESET96       ),
     .clk        ( CLK96       ),
-    .cen        ( OKI_CEN   ),
+    .cen        ( OKI_CEN & DIP_PAUSE   ),
     .ss         ( 1'b1      ),
     // CPU interface
     .wrn        ( ~okim6295_device_0_wr ),  // active low
@@ -361,7 +369,7 @@ jt6295 #(.INTERPOL(1)) u_adpcm_0(
 jt6295 #(.INTERPOL(1)) u_adpcm_1(
     .rst        ( RESET96       ),
     .clk        ( CLK96       ),
-    .cen        ( OKI_CEN   ),
+    .cen        ( OKI_CEN & DIP_PAUSE   ),
     .ss         ( 1'b0      ),
     // CPU interface
     .wrn        ( ~okim6295_device_1_wr ),  // active low
@@ -379,8 +387,8 @@ jt6295 #(.INTERPOL(1)) u_adpcm_1(
 jt51 u_jt51(
     .rst        ( RESET96       ), // reset
     .clk        ( CLK96       ), // main clock
-    .cen        ( YM2151_CEN    ),
-    .cen_p1     ( YM2151_CEN2   ),
+    .cen        ( YM2151_CEN & DIP_PAUSE    ),
+    .cen_p1     ( YM2151_CEN2 & DIP_PAUSE   ),
     .cs_n       ( !fm_cs    ), // chip select
     .wr_n       ( wr_n      ), // write
     .a0         ( A[0]     ),
@@ -395,7 +403,7 @@ jt51 u_jt51(
     .right      (           ),
     // Full resolution output
     .xleft      ( fm_left   ),
-    .xright     ( fm_right  ),
+    .xright     (   ),
     // unsigned outputs for sigma delta converters, full resolution
     .dacleft    (           ),
     .dacright   (           )

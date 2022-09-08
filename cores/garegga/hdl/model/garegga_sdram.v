@@ -122,7 +122,14 @@ module garegga_sdram #(
 	input  [13:0] TEXTROM_ADDR,
 	output [15:0] TEXTROM_DOUT,
 
-	output reg [7:0] GAME
+	output reg [7:0] GAME,
+
+	//hiscores
+	input		  HISCORE_CS,
+	input    [1:0] HISCORE_WE,
+	input   [15:0] HISCORE_DIN,
+	output  [15:0] HISCORE_DOUT,
+	input    [6:0] HISCORE_ADDR 
 );
 
 //loader
@@ -291,22 +298,22 @@ jtframe_rom_4slots #(
 	.SLOT0_AW    (22), //gfx (8MB) (16 bit addressing, but the words are swapped.)
 	.SLOT0_DW    (32),
 	.SLOT0_DOUBLE(1),
-	.SLOT0_LATCH (1),
+	.SLOT0_LATCH (0),
 
 	.SLOT1_AW    (22), //gfx (8MB) (16 bit addressing, but the words are swapped.)
 	.SLOT1_DW    (32),
 	.SLOT1_DOUBLE(1),
-	.SLOT1_LATCH (1),
+	.SLOT1_LATCH (0),
 
 	.SLOT2_AW    (22), //gfx (8MB) (16 bit addressing, but the words are swapped.)
 	.SLOT2_DW    (32),
 	.SLOT2_DOUBLE(1),
-	.SLOT2_LATCH (1),
+	.SLOT2_LATCH (0),
 
 	.SLOT3_AW    (22), //gfx (8MB) (16 bit addressing, but the words are swapped.)
 	.SLOT3_DW    (32),
 	.SLOT3_DOUBLE(1),
-	.SLOT3_LATCH (1)
+	.SLOT3_LATCH (0)
 ) u_bank1 (
     .rst         (RESET),
 	.clk         (CLK),
@@ -353,6 +360,26 @@ jtframe_dual_ram16 #(.aw(14)) u_textrom(
     .addr1(TEXTROM_ADDR),
     .we1(2'b00),
     .q1(TEXTROM_DOUT)
+);
+
+//hiscore table
+wire dump_we = IOCTL_WR & IOCTL_RAM;
+wire [15:0] hiscore_q1;
+assign IOCTL_DIN = IOCTL_ADDR[0] ? hiscore_q1[7:0] : hiscore_q1[15:8];
+
+jtframe_dual_ram16 #(.aw(7)) u_hiscore_table(
+    .clk0   ( CLK  ),
+    .clk1   ( CLK  ),
+    // First port: internal use
+    .addr0  ( HISCORE_ADDR  ),
+    .data0  ( HISCORE_DIN   ),
+    .we0    ( HISCORE_WE    ),
+    .q0     ( HISCORE_DOUT  ),
+    // Second port: dump
+    .addr1  ( IOCTL_ADDR[7:0]>>1 ),
+    .data1  ( {2{IOCTL_DOUT}}  ),
+    .we1    ( {dump_we && !IOCTL_ADDR[0], dump_we && IOCTL_ADDR[0]} ),
+    .q1     ( hiscore_q1 )
 );
 
 endmodule

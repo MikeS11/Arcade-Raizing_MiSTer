@@ -55,8 +55,14 @@ module bakraid_sound (
     output reg     [7:0] SOUNDLATCH3,
     output reg     [7:0] SOUNDLATCH4,
     input          [7:0] SOUNDLATCH,
-    input          [7:0] SOUNDLATCH2
+    input          [7:0] SOUNDLATCH2,
+    input          [1:0] FX_LEVEL,
+    input		 DIP_PAUSE,
+    output reg     [1:0] SOUNDLATCH_ACK,
+    input          [1:0] SOUNDLATCH_ACK_INCOMING
 );
+//clock freq/88200 -1
+`define YMZ280B_SAMPLE_RATE ((47250000/88200)-1)
 
 // assign ACK = 1'b1;
 wire cpu_cen;
@@ -84,27 +90,39 @@ assign right = left;
 
 //clock divider for sound irq
 integer c = 0, cen444 = 'd12000;
-wire cover = c==(cen444-1);
+wire c_over = c==(cen444-1);
 
-always @(posedge CLK96, posedge RESET96) begin
-    if(RESET96) begin
+always @(posedge CLK, posedge RESET) begin
+    if(RESET) begin
         int_n <= 1;
         c <= 0;
     end else if(Z80_CEN) begin 
-        c <= cover ? 0 : (c+1);
+        c <= c_over ? 0 : (c+1);
         if(!iorq_n && !m1_n) int_n <= 1;
-        else if(cover) int_n<=0;
+        else if(c_over) int_n<=0;
     end
 end
 
-localparam [7:0] pcmgain = 8'h0C;
-always @(posedge CLK96) begin
+/*
+0: pcmgain <= 8'h10 ;   // 100%
+1: pcmgain <= 8'h20 ;   // 200%
+2: pcmgain <= 8'h0c ;   // 75%
+3: pcmgain <= 8'h08 ;   // 50%
+*/
+
+wire [7:0] fx_mult = FX_LEVEL == 2 ? 8'h10 :
+                     FX_LEVEL == 3 ? 8'h20 :
+                     FX_LEVEL == 1 ? 8'h0c :
+                     FX_LEVEL == 0 ? 8'h08 :
+                     8'h10; 
+localparam [7:0] pcmgain = 8'h10;
+always @(posedge CLK) begin
     peak <= peak_l | peak_r;
 end
 
 jtframe_mixer #(.W0(16), .W1(16), .WOUT(16)) u_mix_left(
-    .rst    ( RESET96       ),
-    .clk    ( CLK96       ),
+    .rst    ( RESET       ),
+    .clk    ( CLK       ),
     .cen    ( 1'b1      ),
     // input signals
     .ch0    ( fm_left   ),
@@ -112,8 +130,8 @@ jtframe_mixer #(.W0(16), .W1(16), .WOUT(16)) u_mix_left(
     .ch2    ( 16'd0 ),
     .ch3    ( 16'd0     ),
     // gain for each channel in 4.4 fixed point format
-    .gain0  ( pcmgain    ),
-    .gain1  ( pcmgain   ),
+    .gain0  ( fx_mult    ),
+    .gain1  ( fx_mult   ),
     .gain2  ( 8'd0     ),
     .gain3  ( 8'd0     ),
     .mixed  ( left      ),
@@ -142,8 +160,8 @@ wire ymzwr = ymsnd_sel_reg | ymsnd_wr;
 wire ymzrd = ymsnd_rd;
 reg [7:0] fm_din;
 
-always @(posedge CLK96, posedge RESET96) begin
-    if(RESET96) begin
+always @(posedge CLK, posedge RESET) begin
+    if(RESET) begin
         soundlatch3_wr <= 0;
         soundlatch4_wr <= 0;
         batrider_sndirq_w <= 0;
@@ -192,8 +210,8 @@ always @(posedge CLK96, posedge RESET96) begin
     end
 end
 
-always @(posedge CLK96, posedge RESET96) begin  
-    if(RESET96) begin
+always @(posedge CLK, posedge RESET) begin  
+    if(RESET) begin
         SOUNDLATCH3 <= 8'h0;
         SOUNDLATCH4 <= 8'h0;
     end else begin
@@ -206,20 +224,24 @@ always @(posedge CLK96, posedge RESET96) begin
             ymzrd: din<=fm_dout;
             default: din <= 8'hFF;
         endcase
+        
+        SOUNDLATCH_ACK<=SOUNDLATCH_ACK_INCOMING; //synchronize with 68k
 
         if(soundlatch3_wr) begin
             SOUNDLATCH3 <= dout;
+            SOUNDLATCH_ACK[0] <= 1;
         end
 
         else if(soundlatch4_wr) begin
             SOUNDLATCH4 <= dout;
+            SOUNDLATCH_ACK[1] <= 1;
         end
     end
 end
 
 jtframe_ff u_nmi_ff(
-    .clk      ( CLK96         ),
-    .rst      ( RESET96         ),
+    .clk      ( CLK         ),
+    .rst      ( RESET         ),
     .cen      ( 1'b1        ),
     .din      ( 1'b1        ),
     .q        (             ),
@@ -230,20 +252,20 @@ jtframe_ff u_nmi_ff(
 );
 
 jtframe_ff u_m68wait_ff(
-    .clk      ( CLK96         ),
-    .rst      ( RESET96         ),
+    .clk      ( CLK         ),
+    .rst      ( RESET         ),
     .cen      ( 1'b1        ),
     .din      ( 1'b1        ),
     .q        ( WAIT            ),
     .qn       (        ),
     .set      ( 1'b0        ),    // active high
-    .clr      ( soundlatch3_wr || soundlatch4_wr),    // active high
+    .clr      ( |SOUNDLATCH_ACK ),    // release hold on 68k when all ack finished.
     .sigedge  ( CS     ) // signal whose edge will trigger the FF
 );
 
 jtframe_sysz80 #(.RAM_AW(14)) u_cpu(
-    .rst_n      ( ~RESET96    ),
-    .clk        ( CLK96       ),
+    .rst_n      ( ~RESET    ),
+    .clk        ( CLK       ),
     .cen        ( Z80_CEN     ), //5.333
     .cpu_cen    ( cpu_cen     ),
     .int_n      ( int_n       ),
@@ -269,7 +291,7 @@ jtframe_sysz80 #(.RAM_AW(14)) u_cpu(
 
 //sdram bank switch rom 7/8 or 6
 wire [23:0] ymz_mem_addr;
-reg [23:0] last_ymz_mem_addr;
+reg [23:0] last_ymz_mem_addr = 0;
 reg new_addr = 0;
 reg [23:0] cur_rom_addr = 0;
 wire ymz_io_rd;
@@ -292,23 +314,22 @@ wire over_cs = ymz_mem_addr >= 'hC00000 && ymz_io_rd;
 wire [7:0] io_rom_dout = PCM_CS && PCM_OK ? PCM_DOUT :
                          PCM1_CS && PCM1_OK ? PCM1_DOUT :
                          PCM2_CS && PCM2_OK ? PCM2_DOUT :
-                         over_cs ? 0 :
-                         io_rom_dout;
+                         0;
 wire io_rom_valid = (PCM_CS && PCM_OK) ||
                     (PCM1_CS && PCM1_OK) ||
                     (PCM2_CS && PCM2_OK) ||
                     over_cs;
 wire io_rom_waitReq = 1;
 
-always @(posedge CLK96) begin
+always @(posedge CLK) begin
     fm_left <= audio_valid ? io_audio_bits_left : fm_left;
     fm_right <= audio_valid ? io_audio_bits_right : fm_right;
     sample <= audio_valid;
 end
 
 YMZ280B u_ymz280b (
-    .clock(CLK96), //aligned to sdram
-    .reset(RESET96),
+    .clock(CLK & DIP_PAUSE), //aligned to sdram
+    .reset(RESET),
     .io_cpu_rd(ymzrd),
     .io_cpu_wr(ymzwr),
     .io_cpu_addr(A[0]),

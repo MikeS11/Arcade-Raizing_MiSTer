@@ -108,6 +108,7 @@ wire CLK = clk48;
 wire CLK96 = clk;
 wire RESET96 = rst;
 wire CEN16, CEN16B;
+wire FLIP = dipsw[16]; //dipswitch bit 16 in SYS
 // assign game_led = downloading ? 1'b0 : 1'b1;
 
 /*CLOCKS*/
@@ -220,7 +221,8 @@ wire Z80CS, Z80WAIT, SNDIRQ;
 wire BUSACK, BR;
 
 //dip switch
-wire [23:0] DIPSW = dipsw[23:0];
+//make the game always think it's in normal orientation (no flip)
+wire [23:0] DIPSW = {dipsw[23:17], 1'b0, dipsw[15:0]}; //bit 16
 wire DIP_TEST = dip_test;
 wire DIP_PAUSE = dip_pause;
 wire [ 7:0] DIPSW_C, DIPSW_B, DIPSW_A;
@@ -232,6 +234,14 @@ wire LHBLL, LVBLL;
 wire [8:0] V;
 //cpu
 wire TVRAM_BR;
+
+//hiscore
+wire		 HISCORE_CS;
+wire   [1:0] HISCORE_WE;
+wire  [15:0] HISCORE_DIN;
+wire  [15:0] HISCORE_DOUT;
+wire   [8:0] HISCORE_ADDR;
+
 batrider_cpu u_cpu (
     .CLK(CLK),
     .CLK96(CLK96),
@@ -244,6 +254,7 @@ batrider_cpu u_cpu (
     .DOUT(CPU_DOUT),
     .LVBL(LVBLL), //this is low active to the CPU
     .V(V),
+    .FLIP(FLIP),
     
     //inputs
     .JOYMODE(0),
@@ -313,7 +324,14 @@ batrider_cpu u_cpu (
     //main ram for DMA
     .DMA_RAM_CS(DMA_RAM_CS),
     .DMA_RAM_DOUT(DMA_RAM_DOUT),
-    .DMA_RAM_ADDR(DMA_RAM_ADDR)
+    .DMA_RAM_ADDR(DMA_RAM_ADDR),
+
+    //hiscore interface
+    .HISCORE_CS(HISCORE_CS),
+	.HISCORE_WE(HISCORE_WE),
+	.HISCORE_DIN(HISCORE_DIN),
+	.HISCORE_DOUT(HISCORE_DOUT),
+	.HISCORE_ADDR(HISCORE_ADDR) 
 );
 
 //text VRAM controller TVRMCTL7
@@ -367,7 +385,7 @@ TVRMCTL7 u_textvramctl (
     .PALRAM_DATA(PALRAM_DATA)
 );
 
-batrider_video u_video(
+raizing_video u_video(
     .CLK(CLK),
     .CLK96(CLK96),
     .PIXEL_CEN(pxl_cen),
@@ -444,7 +462,8 @@ batrider_video u_video(
     .V(V),
     .RED(red),
     .GREEN(green),
-    .BLUE(blue)
+    .BLUE(blue),
+    .FLIP(FLIP)
 );
 
 batrider_sound u_sound(
@@ -479,7 +498,9 @@ batrider_sound u_sound(
     .left(snd_left),
     .right(snd_right),
     .sample(sample),
-    .peak(peak)
+    .peak(peak),
+    .FX_LEVEL(dip_fxlevel),
+    .DIP_PAUSE(DIP_PAUSE)
 );
 
 //sdram
@@ -574,7 +595,14 @@ batrider_sdram u_sdram (
     .PCM1_CS(PCM1_CS),
     .PCM1_OK(PCM1_OK),
     .PCM1_ADDR(PCM1_ADDR),
-    .PCM1_DOUT(PCM1_DOUT)
+    .PCM1_DOUT(PCM1_DOUT),
+
+    //hiscore interface
+    .HISCORE_CS(HISCORE_CS),
+	.HISCORE_WE(HISCORE_WE),
+	.HISCORE_DIN(HISCORE_DIN),
+	.HISCORE_DOUT(HISCORE_DOUT),
+	.HISCORE_ADDR(HISCORE_ADDR)
 );
 
 endmodule

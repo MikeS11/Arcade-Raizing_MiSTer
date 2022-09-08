@@ -79,6 +79,7 @@ module garegga_cpu (
     input            VSYNC,
     input            FBLANK,
     input      [7:0] GAME,
+    input            FLIP,
 
     //text VRAM interface
     //text vram
@@ -105,7 +106,14 @@ module garegga_cpu (
     input SRAM_WE,
     input Z80WAIT,
     output reg Z80INT,
-    output reg [7:0] OKI_BANK
+    output reg OKI_BANK,
+
+    //hiscore interface
+    output		   HISCORE_CS,
+	output   [1:0] HISCORE_WE,
+	output   [15:0] HISCORE_DIN,
+	input    [15:0] HISCORE_DOUT,
+	output   [6:0] HISCORE_ADDR 
 );
 
 localparam GAREGGA = 'h0, KINGDMGP = 'h2, SSTRIKER = 'h1;
@@ -142,6 +150,15 @@ wire [15:0] main_txlinescroll_q0;
 wire [15:0] main_ram2_q0;
 
 wire [15:0] main_vram_q1;
+
+//hiscore
+reg sel_hiscore;
+wire [23:0] addr_8_plus = {A[23:1], UDSn && !LDSn}; //makes it easier for odd address boundaries
+assign HISCORE_CS = sel_hiscore;
+assign HISCORE_ADDR = GAME == GAREGGA && (addr_8 >='h10CA4C) && (addr_8<'h10CA4C+'hEC) ? (addr_8-'h10CA4C)>>1 : //length:236
+                      'hx;
+assign HISCORE_DIN = cpu_dout;
+assign HISCORE_WE = {sel_hiscore && !RW && !UDSn, sel_hiscore && !RW && !LDSn} & {2{hiscore_init}};
 
 //the first 19 bits are used to address other devices (ie. ROM/RAM). The rest are used for selects.
 assign ADDR[19:1] = A[19:1];
@@ -215,6 +232,12 @@ reg gp9001_vdp_device_r_cs, gp9001_vdp_device_w_cs, read_port_in1_r_cs, read_por
  initial fd = $fopen("log.txt", "w");
 `endif
 
+wire hiscore_init_end_0 = GAME == GAREGGA ? addr_8_plus=='h10CB36 && cpu_dout[15:8] == 'h2A :
+                          'h0;
+
+reg hiscore_init = 0;
+reg last_hiscore_init_end_0 = 0;
+
 always @(posedge CLK96 or posedge RESET96) begin
     if(RESET96) begin
         pre_sel_rom<=0;
@@ -229,10 +252,11 @@ always @(posedge CLK96 or posedge RESET96) begin
         sel_io<=0;
         CPU_PRG_ADDR<=19'd0;
         sel_z80<=1'b0;
-        
+        last_hiscore_init_end_0 <= 0;
     end else begin
         
         if(!ASn && BGACKn) begin
+            last_hiscore_init_end_0<=hiscore_init_end_0;
             //debugging 
             // $display("time: %t, addr: %h, uds: %h, lds: %h, rw: %h, cpu_dout: %h, cpu_din: %h, sel_status: %b\n", $time/1000, addr_8, UDSn, LDSn, RW, cpu_dout, cpu_din, {sel_rom, sel_ram, sel_sram, sel_z80, sel_gp9001, sel_io});
              if(debug) 
@@ -245,6 +269,10 @@ always @(posedge CLK96 or posedge RESET96) begin
 
             //RAM
             pre_sel_ram <= addr_8[23:16] == 8'b0001_0000; // 0x100000 - 0x10FFFF
+
+            sel_hiscore <= GAME == GAREGGA && (addr_8 >='h10CA4C) && (addr_8 < 'h10CA4C+'hEC);
+            //hiscore hook
+            if(!hiscore_init && !hiscore_init_end_0 && last_hiscore_init_end_0) hiscore_init<=1;
             
             //Shared RAM
             pre_sel_sram <= addr_8[23:14] == 10'b0010_0001_10; //0x218000 - 0x21BFFF
@@ -312,6 +340,7 @@ wire [15:0] video_status = V < 256 ? (video_status_hs & video_status_vs & video_
                                      (video_status_hs & video_status_vs & video_status_fb) | 8'hFF;
 
 //JTFRAME is low active, but batrider is high active.
+
 wire [7:0] p1_ctrl = {1'b0, ~JOYSTICK1[6],~JOYSTICK1[5],~JOYSTICK1[4],~JOYSTICK1[0],~JOYSTICK1[1],~JOYSTICK1[2],~JOYSTICK1[3]};
 wire [7:0] p2_ctrl = {1'b0, ~JOYSTICK2[6],~JOYSTICK2[5],~JOYSTICK2[4],~JOYSTICK2[0],~JOYSTICK2[1],~JOYSTICK2[2],~JOYSTICK2[3]};
 
@@ -321,7 +350,7 @@ always @(posedge CLK96, posedge RESET96) begin
         cpu_din <= sel_gp9001 && RW ? GP9001_DOUT : //gcu
                    sel_rom ? CPU_PRG_DATA : //cpu program
                    
-                   //todo: ram hookups
+                   sel_hiscore && hiscore_init ? HISCORE_DOUT : //hiscore reads take precedence over ram.
                    sel_ram && RW ? main_ram_q0 ://ram reads
                    sel_sram && RW ? main_sram_q0 ://ram reads
                    sel_palram && RW ? main_palram_q0 :
@@ -334,7 +363,7 @@ always @(posedge CLK96, posedge RESET96) begin
 
                    read_port_in1_r_cs ? {2{p1_ctrl}} : //controller inputs
                    read_port_in2_r_cs ? {2{p2_ctrl}} :
-                   read_port_sys_r_cs ? {2{1'b0, 1'b0, ~COIN_INPUT[1], ~COIN_INPUT[0], ~START_BUTTON[1], ~START_BUTTON[0], 1'b0 ,1'b0, ~SERVICE}} :
+                   read_port_sys_r_cs ? {2{DIPSW_C, 1'b0, ~START_BUTTON[1], ~START_BUTTON[0], ~COIN_INPUT[1], ~COIN_INPUT[0], ~DIP_TEST, 1'b0, ~SERVICE}} :
                    read_port_dswa_r_cs ? {2{DIPSW_A}} :
                    read_port_dswb_r_cs ? {2{DIPSW_B}} :
                    read_port_jmpr_r_cs ? {2{DIPSW_C}} :
@@ -360,9 +389,9 @@ always @(posedge CLK96) begin
         OKI_BANK<=0;
     end else begin
         if(GAME == KINGDMGP && toaplan2_coinword_w_cs && !RW) begin
-            OKI_BANK <= cpu_dout[7:0];
+            OKI_BANK <= cpu_dout[4];
         end
-        if(soundlatch_w) begin
+        if(GAME == GAREGGA && soundlatch_w) begin
             SOUNDLATCH <= cpu_dout[7:0];
             Z80INT<=1'b1;
         end
@@ -423,18 +452,18 @@ jtframe_virq u_virq(
 );
 
 //68k cpu running at 16mhz
-jtframe_68kdtack u_dtack(
+jtframe_68kdtack #(.W(10)) u_dtack(
     .rst        (RESET96),
     .clk        (CLK96),
     .cpu_cen    (CEN16),
     .cpu_cenb   (CEN16B),
     .bus_cs     (bus_cs),
     .bus_busy   (bus_busy),
-    .bus_legit  (bus_legit),
+    .bus_legit  (1'b0),
     .ASn        (ASn),
     .DSn        ({UDSn, LDSn}),
-    .num        (4'd1),
-    .den        (5'd6),
+    .num        (10'd32),
+    .den        (10'd189),
     .DTACKn     (DTACKn),
     // unused
     .fave       (),

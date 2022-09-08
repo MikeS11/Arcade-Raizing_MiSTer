@@ -31,6 +31,7 @@ module batrider_cpu (
     input [8:0] V,
     output BUSACK,
     input LVBL,
+    input FLIP,
 
     output [19:1] ADDR,
     output [15:0] DOUT,
@@ -109,7 +110,14 @@ module batrider_cpu (
     input Z80WAIT,
     output Z80CS,
     output reg NMI,
-    input SNDIRQ
+    input SNDIRQ,
+
+    //hiscore interface
+    output		   HISCORE_CS,
+	output   [1:0] HISCORE_WE,
+	output  [15:0] HISCORE_DIN,
+	input   [15:0] HISCORE_DOUT,
+	output   [8:0] HISCORE_ADDR 
 );
 
 //address bus
@@ -121,6 +129,14 @@ reg ram_ok = 1'b1;
 reg sel_z80, sel_gp9001, sel_io;
 reg dsn_dly;
 reg pre_sel_ram, pre_sel_vram, pre_sel_rom, pre_sel_zrom, reg_sel_ram, reg_sel_vram, reg_sel_rom, reg_sel_zrom;
+
+//hiscore
+reg sel_hiscore;
+assign HISCORE_CS = sel_hiscore;
+assign HISCORE_ADDR = (addr_8-'h20fa20)>>1;
+assign HISCORE_DIN = cpu_dout;
+assign HISCORE_WE = {sel_hiscore && !RW && !UDSn, sel_hiscore && !RW && !LDSn} & {2{hiscore_init}};
+
 reg text_rom_unpacked = 1'b0;
 wire [15:0] wram_cpu_data = !RW && (sel_ram || sel_vram) ? cpu_dout : 16'h0000;
 assign {TVRAM_WE, TVRAM_CS} = {2{~text_rom_unpacked && sel_vram}};
@@ -198,6 +214,11 @@ reg gp9001_vdp_device_r_cs, gp9001_vdp_device_w_cs, read_port_in_r_cs, read_port
  initial fd = $fopen("log.txt", "w");
 `endif
 
+wire hiscore_init_st = addr_8 =='h20fa20 && !UDSn && LDSn && cpu_dout[15:8] == 'h0;
+wire hiscore_init_end = addr_8 == 'h20FD2E && UDSn && !LDSn && cpu_dout[7:0] == 'h30;
+
+reg hiscore_init = 0;
+reg last_hiscore_init_end = 0;
 always @(posedge CLK96 or posedge RESET96) begin
     if(RESET96) begin
         pre_sel_rom<=0;
@@ -207,11 +228,15 @@ always @(posedge CLK96 or posedge RESET96) begin
         sel_gp9001<=0;
         sel_io<=0;
         sel_z80<=0;
+        sel_hiscore<=0;
         NMI<=0;
         CPU_PRG_ADDR<=20'd0;
+        hiscore_init<=0;
+        last_hiscore_init_end<=0;
     end else begin
         
         if(!ASn && BGACKn) begin
+            last_hiscore_init_end<=hiscore_init_end;
             //debugging 
             // $display("time: %t, addr: %h, uds: %h, lds: %h, rw: %h, cpu_dout: %h, cpu_din: %h, sel_status: %b\n", $time/1000, addr_8, UDSn, LDSn, RW, cpu_dout, cpu_din, {sel_rom, sel_ram, sel_vram, sel_z80, sel_gp9001, sel_io});
              if(debug) 
@@ -226,6 +251,10 @@ always @(posedge CLK96 or posedge RESET96) begin
             
             //68k WRAM
             pre_sel_ram <= addr_8[23:15] == 9'b0010_0000_1; //0x208000 - 0x20FFFF
+            
+            sel_hiscore <= addr_8 >= 'h20fa20 && addr_8 < 'h20fD30; //0x20fa20-0x20fD2F (784 bytes)
+            //hiscore hook
+            if(!hiscore_init && !hiscore_init_end && last_hiscore_init_end) hiscore_init<=1; 
 
             //Z80 ROM
             pre_sel_zrom <= addr_8[23:20] == 4'b0011; // 0x300000 - 0x37FFFF
@@ -248,6 +277,7 @@ always @(posedge CLK96 or posedge RESET96) begin
             sel_z80<=0;
             sel_gp9001<=0;
             sel_io<=0;
+            sel_hiscore<=0;
             NMI<=0;
         end
     end
@@ -290,9 +320,9 @@ wire [15:0] video_status = V < 256 ? (video_status_hs & video_status_vs & video_
                                      (video_status_hs & video_status_vs & video_status_fb) | 8'hFF;
 
 //JTFRAME is low active, but batrider is high active.
+
 wire [7:0] p1_ctrl = {1'b0, ~JOYSTICK1[6],~JOYSTICK1[5],~JOYSTICK1[4],~JOYSTICK1[0],~JOYSTICK1[1],~JOYSTICK1[2],~JOYSTICK1[3]};
 wire [7:0] p2_ctrl = {1'b0, ~JOYSTICK2[6],~JOYSTICK2[5],~JOYSTICK2[4],~JOYSTICK2[0],~JOYSTICK2[1],~JOYSTICK2[2],~JOYSTICK2[3]};
-
 always @(posedge CLK96) begin
     if(RESET96) cpu_din <= 16'h0000;
     else begin
@@ -300,11 +330,12 @@ always @(posedge CLK96) begin
         // if(soundlatch4_r_cs) $display("soundlatch2:%h, soundlatch4_r:%h, fake_4:%h", SOUNDLATCH2, SOUNDLATCH4, fake_soundlatch_4);
         cpu_din <= sel_gp9001 && RW ? GP9001_DOUT : //gcu
                    sel_rom ? CPU_PRG_DATA : //cpu program
+                   sel_hiscore && hiscore_init ? HISCORE_DOUT : //hiscore reads take precedence over ram.
                    sel_ram ? main_ram_q1 ://ram reads
                    sel_vram ? main_vram_q1 ://ram reads
                    sel_zrom ? Z80_PRG_DATA : // z80 program
                    read_port_in_r_cs ? {p2_ctrl, p1_ctrl} : //controller inputs
-                   read_port_sys_dsw_r_cs ? {DIPSW_C, 1'b0, ~COIN_INPUT[1], ~COIN_INPUT[0], ~START_BUTTON[1], ~START_BUTTON[0], 1'b0, 1'b0, ~SERVICE} : //dip switch c/ coins
+                   read_port_sys_dsw_r_cs ? {DIPSW_C, 1'b0, ~START_BUTTON[1], ~START_BUTTON[0], ~COIN_INPUT[1], ~COIN_INPUT[0], ~DIP_TEST, 1'b0, ~SERVICE} : //dip switch c/ coins
                    read_port_dsw_r_cs ? {DIPSW_B, DIPSW_A} : //dip switch a and b.
                    video_count_r_cs ? video_status : // blanking trigger
                    soundlatch3_r_cs ? SOUNDLATCH3 : //soundlatch3
@@ -414,18 +445,18 @@ jtframe_virq u_virq(
 //address bits 19 to 23 go to the E68DEC1B chip.
 
 //68k cpu running at 16mhz
-jtframe_68kdtack u_dtack(
+jtframe_68kdtack #(.W(10)) u_dtack(
     .rst        (RESET96),
     .clk        (CLK96),
     .cpu_cen    (CEN16),
     .cpu_cenb   (CEN16B),
     .bus_cs     (bus_cs),
     .bus_busy   (bus_busy),
-    .bus_legit  (bus_legit),
+    .bus_legit  (1'b0),
     .ASn        (ASn),
     .DSn        ({UDSn, LDSn}),
-    .num        (4'd1),
-    .den        (5'd6),
+    .num        (10'd32),
+    .den        (10'd189),
     .DTACKn     (DTACKn),
     // unused
     .fave       (),

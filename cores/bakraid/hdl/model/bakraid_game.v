@@ -108,6 +108,7 @@ wire CLK = clk48;
 wire CLK96 = clk;
 wire RESET96 = rst;
 wire CEN16, CEN16B;
+wire FLIP = dipsw[16]; //dipswitch bit 16 in SYS
 // assign game_led = downloading ? 1'b0 : 1'b1;
 
 /*CLOCKS*/
@@ -221,12 +222,14 @@ wire [10:0] GP9001OUT;
 wire Z80ACK, NMI;
 wire [7:0] SOUNDLATCH, SOUNDLATCH2, SOUNDLATCH3, SOUNDLATCH4;
 wire Z80CS, Z80WAIT, SNDIRQ;
+wire [1:0] SOUNDLATCH_ACK, SOUNDLATCH_ACK_INCOMING;
 
 //bus sharing
 wire BUSACK, BR;
 
 //dip switch
-wire [23:0] DIPSW = dipsw[23:0];
+//make the game always think it's in normal orientation (no flip)
+wire [23:0] DIPSW = {dipsw[23:17], 1'b0, dipsw[15:0]}; //bit 16
 wire DIP_TEST = dip_test;
 wire DIP_PAUSE = dip_pause;
 wire [ 7:0] DIPSW_C, DIPSW_B, DIPSW_A;
@@ -250,6 +253,7 @@ bakraid_cpu u_cpu (
     .DOUT(CPU_DOUT),
     .LVBL(LVBLL), //this is low active to the CPU
     .V(V),
+    .FLIP(FLIP),
     
     //inputs
     .JOYMODE(0),
@@ -305,6 +309,8 @@ bakraid_cpu u_cpu (
     .SOUNDLATCH4(SOUNDLATCH4),
     .SOUNDLATCH(SOUNDLATCH),
     .SOUNDLATCH2(SOUNDLATCH2),
+    .SOUNDLATCH_ACK(SOUNDLATCH_ACK),
+    .SOUNDLATCH_ACK_INCOMING(SOUNDLATCH_ACK_INCOMING),
 
     //Text VRAM Controller
     .BATRIDER_TEXTDATA_DMA_W(BATRIDER_TEXTDATA_DMA_W),
@@ -379,7 +385,7 @@ TVRMCTL7 u_textvramctl (
     .PALRAM_DATA(PALRAM_DATA)
 );
 
-bakraid_video u_video(
+raizing_video u_video(
     .CLK(CLK),
     .CLK96(CLK96),
     .PIXEL_CEN(pxl_cen),
@@ -456,7 +462,8 @@ bakraid_video u_video(
     .V(V),
     .RED(red),
     .GREEN(green),
-    .BLUE(blue)
+    .BLUE(blue),
+    .FLIP(FLIP)
 );
 
 bakraid_sound u_sound(
@@ -474,6 +481,8 @@ bakraid_sound u_sound(
     .SOUNDLATCH4(SOUNDLATCH4),
     .SOUNDLATCH(SOUNDLATCH),
     .SOUNDLATCH2(SOUNDLATCH2),
+    .SOUNDLATCH_ACK(SOUNDLATCH_ACK_INCOMING),
+    .SOUNDLATCH_ACK_INCOMING(SOUNDLATCH_ACK),
     .ROMZ80_CS(ROMZ801_CS),
 	.ROMZ80_OK(ROMZ801_OK),
 	.ROMZ80_ADDR(ROMZ801_ADDR),
@@ -493,7 +502,9 @@ bakraid_sound u_sound(
     .left(snd_left),
     .right(snd_right),
     .sample(sample),
-    .peak(peak)
+    .peak(peak),
+    .FX_LEVEL(dip_fxlevel),
+    .DIP_PAUSE(DIP_PAUSE)
 );
 
 //sdram

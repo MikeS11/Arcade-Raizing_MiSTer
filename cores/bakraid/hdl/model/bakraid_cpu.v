@@ -31,6 +31,7 @@ module bakraid_cpu (
     input [8:0] V,
     output BUSACK,
     input LVBL,
+    input FLIP,
 
     output [19:1] ADDR,
     output [15:0] DOUT,
@@ -110,6 +111,8 @@ module bakraid_cpu (
     output Z80CS,
     output reg NMI,
     input SNDIRQ,
+    output reg [1:0] SOUNDLATCH_ACK,
+    input [1:0] SOUNDLATCH_ACK_INCOMING,
 
     //eeprom interface
     output reg         EEPROM_SCLK,
@@ -181,13 +184,11 @@ always @(posedge CLK96, posedge RESET96) begin
     end
 end
 
-wire bus_legit = sel_z80 & Z80WAIT;
-
 wire FC0, FC1, FC2;
 wire VPAn = ~&{ FC0, FC1, FC2, ~ASn};
 wire BRn, BGACKn, BGn, DTACKn;
 wire bus_cs = |{ pre_sel_rom, pre_sel_ram, pre_sel_vram, pre_sel_zrom, sel_gp9001, sel_io, sel_z80};
-wire bus_busy = |{ (sel_ram | sel_vram) & ~ram_ok, sel_rom & ~CPU_PRG_OK, sel_zrom & ~Z80_PRG_OK, sel_gp9001 & ~GP9001ACK, bus_legit};
+wire bus_busy = |{ (sel_ram | sel_vram) & ~ram_ok, sel_rom & ~CPU_PRG_OK, sel_zrom & ~Z80_PRG_OK, sel_gp9001 & ~GP9001ACK, sel_z80 & Z80WAIT};
 
 //batrider i/o bus ports
 reg gp9001_vdp_device_r_cs, gp9001_vdp_device_w_cs, read_port_in_r_cs, read_port_sys_dsw_r_cs, 
@@ -272,8 +273,6 @@ always @(*) begin
     batrider_textdata_dma_w_cs = sel_io && (addr_8[7:0] == 8'h80); //0x500080-81
     batrider_unk_dma_w = sel_io && (addr_8[7:0] == 8'h82); //0x500082
     batrider_objectbank_w_cs = sel_io && addr_8[7:4] == 4'hC; //0x5000C0-CF
-    NMI = sel_io && (batrider_soundlatch_w_cs || batrider_soundlatch2_w_cs);
-    // sel_z80 = sel_io && (batrider_unk_sound_w_cs);
 end
 
 assign Z80CS = sel_z80;
@@ -291,6 +290,7 @@ wire [15:0] video_status = V < 256 ? (video_status_hs & video_status_vs & video_
                                      (video_status_hs & video_status_vs & video_status_fb) | 8'hFF;
 
 //JTFRAME is low active, but batrider is high active.
+
 wire [7:0] p1_ctrl = {1'b0, ~JOYSTICK1[6],~JOYSTICK1[5],~JOYSTICK1[4],~JOYSTICK1[0],~JOYSTICK1[1],~JOYSTICK1[2],~JOYSTICK1[3]};
 wire [7:0] p2_ctrl = {1'b0, ~JOYSTICK2[6],~JOYSTICK2[5],~JOYSTICK2[4],~JOYSTICK2[0],~JOYSTICK2[1],~JOYSTICK2[2],~JOYSTICK2[3]};
 
@@ -305,7 +305,7 @@ always @(posedge CLK96, posedge RESET96) begin
                    sel_vram ? main_vram_q1 ://ram reads
                    sel_zrom ? Z80_PRG_DATA : // z80 program
                    read_port_in_r_cs ? {p2_ctrl, p1_ctrl} : //controller inputs
-                   read_port_sys_dsw_r_cs ? {DIPSW_C, 1'b0, ~COIN_INPUT[1], ~COIN_INPUT[0], ~START_BUTTON[1], ~START_BUTTON[0], 1'b0, 1'b0, ~SERVICE} : //dip switch c/ coins
+                   read_port_sys_dsw_r_cs ? {DIPSW_C, 1'b0, ~START_BUTTON[1], ~START_BUTTON[0], ~COIN_INPUT[1], ~COIN_INPUT[0], ~DIP_TEST, 1'b0, ~SERVICE} : //dip switch c/ coins
                    read_port_dsw_r_cs ? {DIPSW_B, DIPSW_A} : //dip switch a and b.
                    video_count_r_cs ? video_status : // blanking trigger
                    soundlatch3_r_cs ? SOUNDLATCH3 : //soundlatch3
@@ -359,11 +359,19 @@ always @(posedge CLK96) begin
             end
         end
 
+        SOUNDLATCH_ACK<=SOUNDLATCH_ACK_INCOMING; // synchronize from z80
+
+        sel_z80 <= batrider_soundlatch_w_cs || batrider_soundlatch2_w_cs;
+        
         if(batrider_soundlatch_w_cs) begin
             SOUNDLATCH <= cpu_dout[7:0];
+            SOUNDLATCH_ACK[0] <= 0;
+            NMI <= 1;
         end
         else if(batrider_soundlatch2_w_cs) begin
             SOUNDLATCH2 <= cpu_dout[7:0];
+            SOUNDLATCH_ACK[1] <= 0;
+            NMI <= 1;
         end
         
         else if(batrider_textdata_dma_w_cs) begin 
@@ -392,6 +400,8 @@ always @(posedge CLK96) begin
             endcase
         end
         else begin
+            NMI<=0;
+
             if(!TVRAMCTL_BUSY) begin
                 BATRIDER_TEXTDATA_DMA_W<=1'b0;
                 BATRIDER_PAL_TEXT_DMA_W<=1'b0;
@@ -415,18 +425,18 @@ wire int1, int2;
 //address bits 19 to 23 go to the E68DEC1B chip.
 
 //68k cpu running at 16mhz
-jtframe_68kdtack u_dtack(
+jtframe_68kdtack #(.W(10)) u_dtack(
     .rst        (RESET96),
     .clk        (CLK96),
     .cpu_cen    (CEN16),
     .cpu_cenb   (CEN16B),
     .bus_cs     (bus_cs),
     .bus_busy   (bus_busy),
-    .bus_legit  (bus_legit),
+    .bus_legit  (1'b0),
     .ASn        (ASn),
     .DSn        ({UDSn, LDSn}),
-    .num        (4'd1),
-    .den        (5'd6),
+    .num        (10'd32),
+    .den        (10'd189),
     .DTACKn     (DTACKn),
     // unused
     .fave       (),
