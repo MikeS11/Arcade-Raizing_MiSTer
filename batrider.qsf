@@ -346,6 +346,9 @@ set_global_assignment -name VERILOG_MACRO "DATE=20220729"
 
 set_global_assignment -name VERILOG_MACRO "SYNTHESIS=1"
 
+#YC Framework
+set_global_assignment -name VERILOG_MACRO "MISTER_ENABLE_YC=1"
+
 set_global_assignment -name SEED 1
 
 set_global_assignment -name DEVICE 5CSEBA6U23I7

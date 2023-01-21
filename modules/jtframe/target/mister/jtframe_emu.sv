@@ -42,7 +42,15 @@ module emu
 
     //Base video clock. Usually equals to CLK_SYS.
     output        CLK_VIDEO,
-
+`ifdef MISTER_ENABLE_YC	
+	output 	[39:0]	CHROMA_PHASE_INC,
+    output  [26:0]  COLORBURST_RANGE,
+	output 			MULFLAG,
+	output 	[4:0]	CHROMAADD,
+	output	[4:0]	CHROMAMUL,
+	output 			PALFLAG,
+	output 			YC_EN, // Enable YC to be build in the core.
+`endif
     //Multiple resolutions are supported using different CE_PIXEL rates.
     //Must be based on CLK_VIDEO
     output        CE_PIXEL,
@@ -164,6 +172,28 @@ assign HDMI_FREEZE = 0;
 wire [3:0] hoffset, voffset;
 
 ////////////////////   CLOCKS   ///////////////////
+
+`ifdef MISTER_ENABLE_YC
+	parameter NTSC_REF = 3.579545;   
+	parameter PAL_REF = 4.43361875;  
+	localparam [6:0] COLORBURST_START = (3.7 * (CLK_VIDEO_NTSC/NTSC_REF));
+	localparam [9:0] COLORBURST_NTSC_END = (9 * (CLK_VIDEO_NTSC/NTSC_REF)) + COLORBURST_START;
+	localparam [9:0] COLORBURST_PAL_END = (10 * (CLK_VIDEO_PAL/PAL_REF)) + COLORBURST_START;
+ 
+	// Modified Variables
+    parameter CLK_VIDEO_NTSC = 96; // Must be filled E.g XX.XXX Hz 
+	parameter CLK_VIDEO_PAL = 96; // Must be filled E.g XX.XXX Hz 
+	localparam [39:0] NTSC_PHASE_INC = 40'd41648230652; // ((NTSC_REF**2^40) / CLK_VIDEO_NTSC);
+	localparam [39:0] PAL_PHASE_INC = 40'd0; // ((PAL_REF*2^40) / CLK_VIDEO_PAL) ;
+
+	assign CHROMA_PHASE_INC = PALFLAG ? PAL_PHASE_INC : NTSC_PHASE_INC; 
+	assign YC_EN =  status[63];  // Change the status to match your configuration
+	assign PALFLAG = 0;  // if applicable, Change the status to match your configuration. 
+	assign MULFLAG = 0;//status[53];//status[58]; // Tune Variables Only
+	assign CHROMAADD = 0;// status[52:48]; // Tune Variables Only
+	assign CHROMAMUL = 0;//status[58:54]; // Tune Variables Only
+ 	assign COLORBURST_RANGE = {COLORBURST_START, COLORBURST_NTSC_END, COLORBURST_PAL_END};
+`endif
 
 wire clk_sys, clk_rom, clk96, clk96sh, clk48, clk48sh, clk24, clk6;
 wire game_rst, game_service, rst, rst_n;
